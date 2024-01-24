@@ -10,6 +10,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.authentication.AbstractAuthenticationToken;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.AuthorityUtils;
@@ -19,6 +20,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 @Component
+@Slf4j
 @RequiredArgsConstructor
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
@@ -40,6 +42,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private void authenticate(HttpServletRequest request, HttpServletResponse response) {
         //AccessToken 추출
         String accessToken = jwtCookieService.getAccessToken(request);
+        log.debug("access token = {}", accessToken);
 
         //AccessToken 검증 후 userId 추출 시도
         Long userId;
@@ -49,6 +52,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         //실패 시 RefreshToken 검증 후 userId 추출 시도
         catch (AccessTokenException ae) {
             String refreshToken = jwtCookieService.getRefreshToken(request);
+            log.debug("refresh token = {}", refreshToken);
             //RefreshToken 검증 후 userId 추출 시도
             try {
                 userId = jwtProvider.getUserIdFromRefreshToken(refreshToken);
@@ -59,6 +63,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             }
         }
 
+        log.debug("인증 완료, userId = {}", userId);
         //인증 처리를 위해 security context설정
         AbstractAuthenticationToken authenticationToken = new UsernamePasswordAuthenticationToken(
                 userId,

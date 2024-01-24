@@ -6,7 +6,9 @@ import io.jsonwebtoken.*;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 import lombok.Builder;
+import lombok.extern.slf4j.Slf4j;
 
+@Slf4j
 public class JwtProviderImpl implements JwtProvider {
 
     private final String SECRET_KEY_STRING;
@@ -34,6 +36,7 @@ public class JwtProviderImpl implements JwtProvider {
             return Long.parseLong(getSubject(accessToken));
         }
         catch (Exception ex) {
+            log.debug("Access Token Parse Error => {}", ex.toString());
             throw new AccessTokenException();
         }
     }
@@ -47,6 +50,7 @@ public class JwtProviderImpl implements JwtProvider {
             return Long.parseLong(getSubject(refreshToken));
         }
         catch (Exception ex) {
+            log.debug("Refresh Token Parse Error => {}", ex.toString());
             throw new RefreshTokenException();
         }
     }
