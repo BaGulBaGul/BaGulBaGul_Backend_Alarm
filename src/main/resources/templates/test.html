@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>SSE Test</title>
+</head>
+<body>
+<h1>Server-Sent Events Test</h1>
+<div id="events"></div>
+
+<script>
+        const eventSource = new EventSource('/alarm/subscribe');
+        eventSource.onmessage = function(e) {
+            const newElement = document.createElement("p");
+            const eventList = document.getElementById("events");
+
+            newElement.textContent = "New event: " + e.data;
+            eventList.appendChild(newElement);
+        };
+    </script>
+</body>
+</html>

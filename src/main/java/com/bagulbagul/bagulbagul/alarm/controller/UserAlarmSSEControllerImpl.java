@@ -24,4 +24,9 @@ public class UserAlarmSSEControllerImpl implements UserAlarmSSEController {
         // 구독하고 연결된 flux 를 얻어옴.
         return userAlarmSubscribeManager.subscribe(userId);
     }
+
+    @GetMapping("/test")
+    public String test() {
+        return "test";
+    }
 }
