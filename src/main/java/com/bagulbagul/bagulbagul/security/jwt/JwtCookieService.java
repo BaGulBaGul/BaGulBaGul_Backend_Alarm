@@ -1,10 +1,9 @@
 package com.bagulbagul.bagulbagul.security.jwt;
 
 
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.http.server.reactive.ServerHttpRequest;
 
 public interface JwtCookieService {
-    String getAccessToken(HttpServletRequest request);
-    String getRefreshToken(HttpServletRequest request);
+    String getAccessToken(ServerHttpRequest request);
+    String getRefreshToken(ServerHttpRequest request);
 }
