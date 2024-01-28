@@ -1,12 +1,11 @@
 package com.bagulbagul.bagulbagul.security.jwt;
 
-import jakarta.servlet.http.Cookie;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.ResponseCookie;
+import org.springframework.http.HttpCookie;
+import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.stereotype.Service;
+import org.springframework.util.MultiValueMap;
 
 @Service
 @RequiredArgsConstructor
@@ -19,24 +18,17 @@ public class JwtCookieServiceImpl implements JwtCookieService {
     private String REFRESH_TOKEN_COOKIE_NAME;
 
     @Override
-    public String getAccessToken(HttpServletRequest request) {
+    public String getAccessToken(ServerHttpRequest request) {
         return getToken(request, ACCESS_TOKEN_COOKIE_NAME);
     }
 
     @Override
-    public String getRefreshToken(HttpServletRequest request) {
+    public String getRefreshToken(ServerHttpRequest request) {
         return getToken(request, REFRESH_TOKEN_COOKIE_NAME);
     }
 
-    private String getToken(HttpServletRequest request, String tokenName) {
-        if(request.getCookies() == null) {
-            return null;
-        }
-        for(Cookie cookie : request.getCookies()) {
-            if(cookie.getName().equals(tokenName)) {
-                return cookie.getValue();
-            }
-        }
-        return null;
+    private String getToken(ServerHttpRequest request, String tokenName) {
+        MultiValueMap<String, HttpCookie> cookies = request.getCookies();
+        return cookies.getFirst(tokenName).getValue();
     }
 }
