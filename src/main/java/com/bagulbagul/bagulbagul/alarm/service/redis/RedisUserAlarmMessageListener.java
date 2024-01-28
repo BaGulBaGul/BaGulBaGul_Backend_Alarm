@@ -16,10 +16,10 @@ public class RedisUserAlarmMessageListener implements MessageListener {
     @Override
     public void onMessage(Message message, byte[] pattern) {
         int failCnt = 0;
-        EmitResult emitResult = sink.tryEmitNext(message.getBody());
+        EmitResult emitResult = sink.tryEmitNext(message.toString());
         while(emitResult.isFailure() && failCnt < RETRY_CNT) {
             failCnt += 1;
-            sink.tryEmitNext(message.getBody());
+            sink.tryEmitNext(message.toString());
         }
     }
 }
