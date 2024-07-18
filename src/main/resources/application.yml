@@ -1,0 +1,13 @@
+spring:
+  redis:
+    host: ${REDIS_HOST}
+    port: ${REDIS_PORT}
+jwt:
+  secret_key: ${JWT_SECRET_KEY}
+user:
+  login:
+    access_token_cookie_name: Access_Token
+    refresh_token_cookie_name: Refresh_Token
+server:
+  http2:
+    enabled: true
