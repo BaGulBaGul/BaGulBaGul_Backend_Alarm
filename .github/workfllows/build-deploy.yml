@@ -1,0 +1,186 @@
+name: build and deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    if: github.repository == 'BaGulBaGul/BaGulBaGul_Backend_Alarm'
+    runs-on: ubuntu-latest
+    env:
+      TARGET_DOCKER_IMAGE_NAME: bagulbagul-backend-alarm
+    steps:
+      #브랜치 내용 체크아웃
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      #도커 허브 로그인
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ohretry
+          password: ${{secrets.DOCKERHUB_PASSWORD}}
+
+      #docker 이미지 빌드 후 푸시
+      - name: docker build and push
+        run: |
+          docker build -t ohretry/$TARGET_DOCKER_IMAGE_NAME .
+          docker push ohretry/$TARGET_DOCKER_IMAGE_NAME
+
+  #블루 그린 배포
+  deploy:
+    if: github.repository == 'BaGulBaGul/BaGulBaGul_Backend_Alarm'
+    runs-on: ubuntu-latest
+    needs: build
+    env:
+      ALB_LISTENER_ARN: ${{ vars.ALB_LISTENER_BACKEND_ALARM_ARN }}
+      ALB_LISTENER_HEALTH_CHECK_ARN: ${{ vars.ALB_LISTENER_BACKEND_ALARM_HEALTH_CHECK_ARN }}
+      ASG_DESIRED_CAPACITY: ${{ vars.ASG_BACKEND_ALARM_DESIRED_CAPACITY }}
+      ENV_KEY: env
+      ENV_GREEN_NAME: bagulbagul-backend-alarm-green
+      ENV_BLUE_NAME: bagulbagul-backend-alarm-blue
+    steps:
+      - name: Set up AWS CLI
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+
+      # asg-blue, asg-green, tg-blue, tg-green 을 찾는다
+      - name: asg-blue, asg-green, tg-blue, tg-green 검색
+        run: |
+          # 태그를 이용해 asg-blue, asg-green, tg-blue, tg-green를 찾는다
+          # asg-blue 찾기
+          ASG_BLUE_NAME=$(aws autoscaling describe-auto-scaling-groups --query "AutoScalingGroups[?Tags[?Key=='$ENV_KEY' && Value=='$ENV_BLUE_NAME']].AutoScalingGroupName" --output text)
+          # asg-blue가 존재하는지 확인
+          if [ -z "$ASG_BLUE_NAME" ]; then
+            echo "Error: asg-blue를 찾을 수 없습니다."
+            exit 1
+          fi
+          echo "asg-blue-name: $ASG_BLUE_NAME"
+          echo "ASG_BLUE_NAME=$ASG_BLUE_NAME" >> $GITHUB_ENV
+
+          # tg-blue 찾기
+          TG_BLUE_ARN=$(aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names $ASG_BLUE_NAME --query "AutoScalingGroups[0].TargetGroupARNs[]" --output text)
+          # tg-green이 존재하는지 확인
+          if [ -z "$TG_BLUE_ARN" ]; then
+            echo "Error: tg-blue를 찾을 수 없습니다."
+            exit 1
+          fi          
+          echo "tg-blue-arn: $TG_BLUE_ARN"
+          echo "TG_BLUE_ARN=$TG_BLUE_ARN" >> $GITHUB_ENV
+          
+          # asg-green 찾기
+          ASG_GREEN_NAME=$(aws autoscaling describe-auto-scaling-groups --query "AutoScalingGroups[?Tags[?Key=='$ENV_KEY' && Value=='$ENV_GREEN_NAME']].AutoScalingGroupName" --output text)
+          # asg-green이 존재하는지 확인
+          if [ -z "$ASG_GREEN_NAME" ]; then
+            echo "Error: asg-green을 찾을 수 없습니다."
+            exit 1
+          fi
+          echo "asg-green-name: $ASG_GREEN_NAME"
+          echo "ASG_GREEN_NAME=$ASG_GREEN_NAME" >> $GITHUB_ENV
+          
+          # tg-green 찾기
+          TG_GREEN_ARN=$(aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names $ASG_GREEN_NAME --query "AutoScalingGroups[0].TargetGroupARNs[]" --output text)
+          # tg-green이 존재하는지 확인
+          if [ -z "$TG_GREEN_ARN" ]; then
+            echo "Error: tg-green을 찾을 수 없습니다."
+            exit 1
+          fi
+          echo "tg-green-arn: $TG_GREEN_ARN"
+          echo "TG_GREEN_ARN=$TG_GREEN_ARN" >> $GITHUB_ENV
+
+      # asg-green의 인스턴스 수를 늘린다
+      - name: scale out green
+        run: |
+          # 인스턴스 수 늘리기
+          echo "asg-green의 인스턴스 수를 $ASG_DESIRED_CAPACITY 으로 변경"
+          echo "aws autoscaling update-auto-scaling-group --auto-scaling-group-name $ASG_GREEN_NAME --desired-capacity $ASG_DESIRED_CAPACITY"
+          aws autoscaling update-auto-scaling-group --auto-scaling-group-name $ASG_GREEN_NAME --desired-capacity $ASG_DESIRED_CAPACITY
+
+      # tg-green의 대상 상태 확인 및 기다리기
+      - name: green 인스턴스 상태 체크
+        run: |
+          # tg-green의 대상 상태 확인 및 기다리기
+          # tg-green을 상태확인용 리스너에 연결한다(리스너에 연결되지 않으면 tg가 상태를 unused로 반환한다)
+          echo "상태 확인용 리스너에 tg-green을 연결"
+          aws elbv2 modify-listener --listener-arn $ALB_LISTENER_HEALTH_CHECK_ARN --default-actions Type=forward,TargetGroupArn=$TG_GREEN_ARN
+          
+          # 10분동안 10초간격으로 대상 그룹의 상태를 확인
+          MAX_RETRIES=60  # 최대 재시도 횟수
+          RETRY_INTERVAL=10  # 대기 시간 (초)
+
+          for ((i=0; i<MAX_RETRIES; i++)); do
+            TARGET_HEALTH=$(aws elbv2 describe-target-health --target-group-arn $TG_GREEN_ARN --query "TargetHealthDescriptions[*].TargetHealth.State" --output text)
+            echo "tg-green target health: $TARGET_HEALTH"
+
+            # 대상 그룹에 인스턴스가 있는지 확인
+            if [ -z "$TARGET_HEALTH" ]; then
+              echo "대상 그룹에 인스턴스가 없습니다. 잠시 대기 후 다시 확인합니다."
+              sleep $RETRY_INTERVAL
+            else
+              # 모든 대상의 상태를 배열로 변환
+              HEALTH_ARRAY=($TARGET_HEALTH)
+            
+              # unhealthy 상태가 있는지 확인
+              UNHEALTHY_COUNT=0
+              for STATE in "${HEALTH_ARRAY[@]}"; do
+                if [[ "$STATE" != "healthy" ]]; then
+                  UNHEALTHY_COUNT=$((UNHEALTHY_COUNT + 1))
+                fi
+              done
+              
+              # 전부 healthy           
+              if [ $UNHEALTHY_COUNT -eq 0 ]; then
+                echo "모든 대상이 healthy"
+                break
+              # unhealthy 존재
+              else
+                echo "$UNHEALTHY_COUNT unhealthy 상태가 존재. $RETRY_INTERVAL 초 대기..."
+                sleep $RETRY_INTERVAL
+              fi
+            fi
+
+            # 마지막 시도에도 여전히 unhealthy일 경우 작업 종료
+            if [[ $i -eq $((MAX_RETRIES - 1)) ]]; then
+              echo "상태 체크 최대 시도 도달. tg-green은 unhealthy."
+              exit 1
+            fi
+          done
+
+      # tg-green unhealthy 처리
+      - name: 실패 시 green의 인스턴스를 삭제
+        if: failure()
+        run: |
+          # green의 인스턴스 수를 다시 0으로 변경
+          echo "asg-green의 인스턴스 수를 0으로 변경"
+          aws autoscaling update-auto-scaling-group --auto-scaling-group-name $ASG_GREEN_NAME --desired-capacity 0
+
+      # tg-blue에서 tg-green으로 로드밸런서의 트래픽을 전환한다
+      - name: 트래픽을 blue에서 green으로 전환
+        run: |
+          # alb의 리스너 트래픽 전환
+          echo "alb의 트래픽을 tg-blue에서 tg-green으로 변경"
+          aws elbv2 modify-listener --listener-arn $ALB_LISTENER_ARN --default-actions Type=forward,TargetGroupArn=$TG_GREEN_ARN
+
+      # asg-blue의 인스턴스 수를 0으로 줄인다
+      - name: blue의 인스턴스를 삭제
+        run: |
+          # asg-blue의 desired capacity를 0으로 변경
+          aws autoscaling update-auto-scaling-group --auto-scaling-group-name $ASG_BLUE_NAME --desired-capacity 0
+
+      # 블루, 그린 환경 태그 업데이트
+      - name: blue, green 환경 태그를 업데이트
+        run: |
+          #green -> blue, blue -> green
+          #green -> blue
+          aws autoscaling create-or-update-tags --tags "ResourceId=$ASG_GREEN_NAME,ResourceType=auto-scaling-group,Key=$ENV_KEY,Value=$ENV_BLUE_NAME,PropagateAtLaunch=false"
+          aws elbv2 add-tags --resource-arns $TG_GREEN_ARN --tags Key=$ENV_KEY,Value=$ENV_BLUE_NAME
+          
+          #blue -> green
+          aws autoscaling create-or-update-tags --tags "ResourceId=$ASG_BLUE_NAME,ResourceType=auto-scaling-group,Key=$ENV_KEY,Value=$ENV_GREEN_NAME,PropagateAtLaunch=false"
+          aws elbv2 add-tags --resource-arns $TG_BLUE_ARN --tags Key=$ENV_KEY,Value=$ENV_GREEN_NAME
