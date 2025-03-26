@@ -29,6 +29,10 @@ public class JwtCookieServiceImpl implements JwtCookieService {
 
     private String getToken(ServerHttpRequest request, String tokenName) {
         MultiValueMap<String, HttpCookie> cookies = request.getCookies();
-        return cookies.getFirst(tokenName).getValue();
+        HttpCookie cookie = cookies.getFirst(tokenName);
+        if(cookie == null) {
+            return null;
+        }
+        return cookie.getValue();
     }
 }
