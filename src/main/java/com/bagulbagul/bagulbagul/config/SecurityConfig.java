@@ -4,6 +4,7 @@ import com.bagulbagul.bagulbagul.security.filter.JwtAuthenticationFilter;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableReactiveMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -32,12 +33,15 @@ public class SecurityConfig {
         http.csrf(httpSecurityCsrfConfigurer -> httpSecurityCsrfConfigurer.disable());
         // 기본 인증(아이디 비밀번호 BASE64인코딩) 비활성화
         http.httpBasic(httpSecurityHttpBasicConfigurer -> httpSecurityHttpBasicConfigurer.disable());
-        // 세션x
-//        http.sessionManagement(session ->
-//                session.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
+
         http.addFilterAt(jwtAuthenticationFilter, SecurityWebFiltersOrder.AUTHENTICATION);
         // 경로별 인증 설정
-        http.authorizeExchange(authorizeExchangeSpec -> authorizeExchangeSpec.anyExchange().authenticated());
+        http.authorizeExchange(authorizeExchangeSpec -> {
+                authorizeExchangeSpec
+                        .pathMatchers(HttpMethod.GET, "/").permitAll()
+                        .anyExchange().authenticated();
+            }
+        );
         return http.build();
     }
 }
