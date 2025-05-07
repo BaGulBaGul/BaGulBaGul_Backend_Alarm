@@ -19,7 +19,7 @@ public class RedisUserAlarmMessageListener implements MessageListener {
         EmitResult emitResult = sink.tryEmitNext(message.toString());
         while(emitResult.isFailure() && failCnt < RETRY_CNT) {
             failCnt += 1;
-            sink.tryEmitNext(message.toString());
+            emitResult = sink.tryEmitNext(message.toString());
         }
     }
 }
