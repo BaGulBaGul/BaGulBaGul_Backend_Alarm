@@ -10,6 +10,7 @@ import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.core.publisher.Sinks.Many;
 import reactor.core.scheduler.Schedulers;
@@ -47,10 +48,15 @@ public class RedisUserAlarmSubscribeManager implements UserAlarmSubscribeManager
      */
     @Override
     public Flux<String> subscribe(final Long userId) {
+
         // userId에 대한 구독 정보가 없다면 등록. 구독 정보를 가져온다.
-        RedisUserAlarmSubscribeInfo info = subscribeInfoMap.computeIfAbsent(userId, (key) -> register(key));
+        // 등록 과정에서 이벤트 루프의 block을 방지하기 위해 작업 스레드에서 처리
+        Mono<RedisUserAlarmSubscribeInfo> infoMono = Mono.fromCallable(() ->
+                        subscribeInfoMap.computeIfAbsent(userId, key -> register(key))
+                ).subscribeOn(Schedulers.boundedElastic());
+
         //연결된 Flux 반환
-        return info.getFlux();
+        return infoMono.flatMapMany(RedisUserAlarmSubscribeInfo::getFlux);
     }
 
     /*
@@ -90,13 +96,19 @@ public class RedisUserAlarmSubscribeManager implements UserAlarmSubscribeManager
                 //클라이언트가 구독을 시작
                 .doOnSubscribe(subscription -> {
                     // 구독자 수 +1
-                    increaseSubscriptionCnt(userId);
+                    // 이벤트 루프가 잠시 block될수 있으므로 작업 스레드에서 처리
+                    Mono.fromRunnable(() -> increaseSubscriptionCnt(userId))
+                            .subscribeOn(Schedulers.boundedElastic())
+                            .subscribe();
                 })
                 //클라이언트가 연결을 종료하면 구독 해제(명시적인 종료 요청에 해당)
                 //heartbeat 메세지를 주기적으로 보내서 비정상적인 종료에 의해 남은 연결도 주기적으로 정리.
                 .doOnCancel(() -> {
                     // 구독자 수 -1
-                    decreaseSubscriptionCnt(userId);
+                    // 이벤트 루프가 잠시 block될수 있으므로 작업 스레드에서 처리
+                    Mono.fromRunnable(() -> decreaseSubscriptionCnt(userId))
+                            .subscribeOn(Schedulers.boundedElastic())
+                            .subscribe();
                 });
         //메세지 Flux 와 heartbeat Flux 를 묶어서 반환
         return Flux.merge(messageFlux, heartbeatFlux);
