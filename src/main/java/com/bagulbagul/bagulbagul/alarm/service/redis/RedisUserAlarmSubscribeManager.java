@@ -1,10 +1,12 @@
 package com.bagulbagul.bagulbagul.alarm.service.redis;
 
 import com.bagulbagul.bagulbagul.alarm.service.UserAlarmSubscribeManager;
+import jakarta.annotation.PostConstruct;
 import java.time.Duration;
 import java.util.concurrent.ConcurrentHashMap;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.connection.MessageListener;
 import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
@@ -21,11 +23,16 @@ import reactor.core.scheduler.Schedulers;
 public class RedisUserAlarmSubscribeManager implements UserAlarmSubscribeManager {
 
     //redis 채널명의 prefix
-    private final String TOPIC_PREFIX = "alarm_user_";
+    @Value("${alarm.realtime.redis.alarm_topic_prefix}")
+    private String TOPIC_PREFIX;
+
     //HeartBeat 요청의 간격(초)
-    private final int HEARTBEAT_INTERVAL_SECOND = 120;
+    @Value("${alarm.realtime.hb_interval_second}")
+    private int HEARTBEAT_INTERVAL_SECOND;
     //HeartBeat 요청 메세지 내용
-    private final String HEARTBEAT_MESSAGE = "HB";
+    @Value("${alarm.realtime.hb_message}")
+    private String HEARTBEAT_MESSAGE;
+
     //레디스 메세지 리스너 관리 컨테이너
     private final RedisMessageListenerContainer redisMessageListenerContainer;
 
@@ -36,9 +43,14 @@ public class RedisUserAlarmSubscribeManager implements UserAlarmSubscribeManager
     //single thread 의 이유
     //1.같은 동작을 반복하므로 캐시 등의 효율성을 위해 한 스레드에서 실행하도록 함.
     //2.연결 정리보다 다른 메세지 전달이 더 중요하기 때문에 다른 Flux 를 방해하지 않기 위해 스레드 제한을 뒀다.
-    private final Flux<String> heartbeatFlux = Flux.interval(Duration.ofSeconds(HEARTBEAT_INTERVAL_SECOND), Schedulers.single())
-            .map(i -> HEARTBEAT_MESSAGE);
+    private Flux<String> heartbeatFlux;
 
+
+    @PostConstruct
+    private void init() {
+        heartbeatFlux = Flux.interval(Duration.ofSeconds(HEARTBEAT_INTERVAL_SECOND), Schedulers.single())
+                .map(i -> HEARTBEAT_MESSAGE);
+    }
 
     /*
      * flow : redis_pub/sub -> redis_message_listener -> sink -> flux

@@ -11,6 +11,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient;
 import org.springframework.boot.test.autoconfigure.web.reactive.WebFluxTest;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -37,7 +38,12 @@ class UserAlarmSSEControllerIntegrationTest {
     @Autowired
     RedisTemplate<String, String> redisTemplate;
 
-    private final String ALARM_TOPIC_PREFIX = "alarm_user_";
+
+    @Value("${alarm.realtime.redis.alarm_topic_prefix}")
+    private String ALARM_TOPIC_PREFIX;
+
+    @Value("${alarm.realtime.hb_message}")
+    private String HB_MESSAGE;
 
     @Test
     public void test() {
@@ -65,7 +71,7 @@ class UserAlarmSSEControllerIntegrationTest {
         //sse 알람 메세지 수신
         String alarmMessage = sse
                 .map(ServerSentEvent::data)
-                .filter(s -> !s.equals("HB"))
+                .filter(s -> !s.equals(HB_MESSAGE))
                 .take(1)
                 .blockFirst();
 
