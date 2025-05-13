@@ -1,0 +1,71 @@
+name: test pull request
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+jobs:
+  test:
+    if: github.repository == 'BaGulBaGul/BaGulBaGul_Backend_Alarm'
+    runs-on: ubuntu-latest
+    # fork에서 온 pr이면 승인을 필요하도록 설정(레포지토리의 비밀이나 환경변수에 접근하기 위함)
+    environment: ${{ github.event.pull_request.head.repo.fork && 'protected-env' || '' }}
+    env:
+      CONFIG_GITCRYPT_PRIVATEKEY: ${{secrets.CONFIG_REPOSITORY_GITCRYPT_GPG_PRIVATEKEY}}
+      CONFIG_REPO_ADDRESS: ${{vars.CONFIG_REPOSITORY_ADDRESS}}
+      CONFIG_REPO_NAME: ${{vars.CONFIG_REPOSITORY_NAME}}
+      CONFIG_FILEPATH: ${{vars.CONFIG_REPOSITORY_BACKEND_ALARM_ENVFILE_PATH}}
+      CONFIG_EXTRACT_DOCKER_IMAGE_NAME: clone-decrypt_config-repository
+    steps:
+      - run: echo "head.repo.fork = ${{ github.event.pull_request.head.repo.fork }}"
+      - run: echo "head.repo.full_name = ${{ github.event.pull_request.head.repo.full_name }}"
+      - run: echo "${{ github.event.pull_request.head.repo.fork && 'protected-env' || '' }}"
+      - name: tt
+        run: |
+          echo ${{vars.CONFIG_REPOSITORY_ADDRESS}}
+          echo ${{vars.CONFIG_REPOSITORY_NAME}}
+          echo ${{vars.CONFIG_REPOSITORY_BACKEND_ALARM_ENVFILE_PATH}}
+          echo ${{vars.ALB_LISTENER_BACKEND_ALARM_ARN}}
+          echo ${{vars.ALB_LISTENER_BACKEND_ALARM_HEALTH_CHECK_ARN}}
+
+      #브랜치 내용 체크아웃
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # JDK 버전 17로 변경
+      - name: Set up JDK 17
+        uses: actions/setup-java@v2
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      #환경변수 파일 추출
+      - name: config 레포지토리의 환경변수 파일을 clone하고 복호화
+        run: >
+          docker run
+          -v .:/home
+          -e CONFIG_REPOSITORY_GITCRYPT_GPG_PRIVATEKEY="$CONFIG_GITCRYPT_PRIVATEKEY"
+          -e CONFIG_REPOSITORY_ADDRESS="$CONFIG_REPO_ADDRESS"
+          -e CONFIG_REPOSITORY_NAME="$CONFIG_REPO_NAME"
+          ohretry/$CONFIG_EXTRACT_DOCKER_IMAGE_NAME
+
+      #환경변수 파일 확인
+      - name: 앱 환경변수 파일 체크
+        run: ls -l "$CONFIG_REPO_NAME/$CONFIG_FILEPATH"
+
+      #테스트
+      - name: 테스트
+        id: test
+        run: |
+          cp "$CONFIG_REPO_NAME/$CONFIG_FILEPATH" .env
+          chmod +x ./gradlew
+          ./gradlew test
+
+      #테스트 결과 아티펙트로 업로드
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: build/reports/tests/test/
