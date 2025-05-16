@@ -123,7 +123,10 @@ public class RedisUserAlarmSubscribeManager implements UserAlarmSubscribeManager
                             .subscribe();
                 });
         //메세지 Flux 와 heartbeat Flux 를 묶어서 반환
-        return Flux.merge(messageFlux, heartbeatFlux);
+        messageFlux = Flux.merge(messageFlux, heartbeatFlux);
+        //sse 준비 완료 즉시 HB 메세지를 한번 방출
+        messageFlux = Flux.concat(Mono.just(HEARTBEAT_MESSAGE), messageFlux);
+        return messageFlux;
     }
 
     /*
