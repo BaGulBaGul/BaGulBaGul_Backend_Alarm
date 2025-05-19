@@ -61,11 +61,30 @@ public class RedisUserAlarmSubscribeManager implements UserAlarmSubscribeManager
     @Override
     public Flux<String> subscribe(final Long userId) {
 
-        // userId에 대한 구독 정보가 없다면 등록. 구독 정보를 가져온다.
-        // 등록 과정에서 이벤트 루프의 block을 방지하기 위해 작업 스레드에서 처리
+        /*
+         * userId에 대한 구독 정보가 없다면 등록. 구독 정보를 가져온다.
+         * 등록 과정에서 이벤트 루프의 block을 방지하기 위해 작업 스레드에서 처리
+         *
+         * 구독자 수는 동기화된 코드 내에서 구독 정보 반환 직전에 즉시 올려줘야 한다.
+         * 만약 doOnSubscribe에서 구독자 수를 증가시키면 기존 연결이 닫히면서 구독자가 0이 되고 자원이 정리될 수 있다.
+         * req1 : subscribe -> subscribeInfoMap[userId] : absent -> register -> add RedisListener -> return subscribeInfoMap[userId].getFlux()
+         * req1 : doOnSubscribe -> cnt=1
+         * req2 : subscribe -> subscribeInfoMap[userId] : present -> return subscribeInfoMap[userId].getFlux()
+         * req1 : doOnCancle -> subscribeInfoMap[userId] : present -> cnt=0 -> subscribeInfoMap[userId]=null -> remove RedisListener
+         * req2 : doOnSubscribe -> subscribeInfoMap[userId] : absent -> doNothing
+         */
         Mono<RedisUserAlarmSubscribeInfo> infoMono = Mono.fromCallable(() ->
-                        subscribeInfoMap.computeIfAbsent(userId, key -> register(key))
-                ).subscribeOn(Schedulers.boundedElastic());
+                        subscribeInfoMap.compute(userId, (key, redisUserAlarmSubscribeInfo) -> {
+                            //userId에 대해 구독 정보 등록
+                            if(redisUserAlarmSubscribeInfo == null) {
+                                redisUserAlarmSubscribeInfo = register(key);
+                            }
+                            //구독자 수 증가
+                            redisUserAlarmSubscribeInfo.setSubscribeCnt(redisUserAlarmSubscribeInfo.getSubscribeCnt() + 1);
+                            //구독 정보 반환
+                            return redisUserAlarmSubscribeInfo;
+                        }))
+                .subscribeOn(Schedulers.boundedElastic());
 
         //연결된 Flux 반환
         return infoMono.flatMapMany(RedisUserAlarmSubscribeInfo::getFlux);
@@ -105,14 +124,6 @@ public class RedisUserAlarmSubscribeManager implements UserAlarmSubscribeManager
                 .doOnError(e -> {
                     log.error("실시간 알람 전송 실패", e);
                 })
-                //클라이언트가 구독을 시작
-                .doOnSubscribe(subscription -> {
-                    // 구독자 수 +1
-                    // 이벤트 루프가 잠시 block될수 있으므로 작업 스레드에서 처리
-                    Mono.fromRunnable(() -> increaseSubscriptionCnt(userId))
-                            .subscribeOn(Schedulers.boundedElastic())
-                            .subscribe();
-                })
                 //클라이언트가 연결을 종료하면 구독 해제(명시적인 종료 요청에 해당)
                 //heartbeat 메세지를 주기적으로 보내서 비정상적인 종료에 의해 남은 연결도 주기적으로 정리.
                 .doOnCancel(() -> {
@@ -127,18 +138,6 @@ public class RedisUserAlarmSubscribeManager implements UserAlarmSubscribeManager
         //sse 준비 완료 즉시 HB 메세지를 한번 방출
         messageFlux = Flux.concat(Mono.just(HEARTBEAT_MESSAGE), messageFlux);
         return messageFlux;
-    }
-
-    /*
-     * userId에 대해 구독자 수를 증가시킴.
-     * userId에 대해 동기화된 처리 수행
-     */
-    private void increaseSubscriptionCnt(Long userId) {
-        // 구독자 수 +1
-        subscribeInfoMap.computeIfPresent(userId, (key, redisUserAlarmSubscribeInfo) -> {
-            redisUserAlarmSubscribeInfo.setSubscribeCnt(redisUserAlarmSubscribeInfo.getSubscribeCnt() + 1);
-            return redisUserAlarmSubscribeInfo;
-        });
     }
 
     /*
@@ -161,15 +160,6 @@ public class RedisUserAlarmSubscribeManager implements UserAlarmSubscribeManager
             return redisUserAlarmSubscribeInfo;
         });
     }
-
-//    /*
-//     * userId에 대한 구독 정보를 삭제한다.
-//     * userId에 대한 동기화를 고려해야 한다.
-//     * 레디스 메세지 리스너를 해제하고 info map 에서 구독 정보를 제거한다.
-//     */
-//    private void unRegister(Long userId) {
-//
-//    }
 
     private RedisUserAlarmMessageListener attachRedisTopicListener(Long userId, Sinks.Many<String> sink) {
         //리스너 생성
