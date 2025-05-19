@@ -16,6 +16,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.core.publisher.Sinks.Many;
 import reactor.core.scheduler.Schedulers;
+import reactor.util.concurrent.Queues;
 
 @Slf4j
 @Service
@@ -97,8 +98,14 @@ public class RedisUserAlarmSubscribeManager implements UserAlarmSubscribeManager
      * 생성된 구독 정보를 반환한다.
      */
     private RedisUserAlarmSubscribeInfo register(Long userId) {
-        // sink 생성, Hot Stream
-        Many sink = Sinks.many().multicast().onBackpressureBuffer();
+        /*
+         * sink 생성, Hot Stream
+         * 자체 구독자 관리 로직이 sink의 구독자 관리 위에서 돌아가므로 동시 요청 시 순간적으로 구독자가 0이 될 수가 있다.
+         * req1 subscribe flux(sink 1, 자체 1) -> req2 get flux(sink 1, 자체 2)
+         * -> req1 cancle(sink 0, 자체 1) -> sink autocancle -> req2 subscribe flux
+         * 따라서 autoCancle은 false로 하고 자체 구독자 0명이 되면 직접 sink를 닫는다.
+         */
+        Many sink = Sinks.many().multicast().onBackpressureBuffer(Queues.SMALL_BUFFER_SIZE, false);
         // sink 에서 데이터를 받고 연결, 구독 관리 설정을 추가한 Flux 생성
         Flux<String> flux = createFlux(userId, sink);
         //redis pub sub 리스너를 추가
@@ -154,6 +161,8 @@ public class RedisUserAlarmSubscribeManager implements UserAlarmSubscribeManager
             if(redisUserAlarmSubscribeInfo.getSubscribeCnt() == 0) {
                 //리스너 해제
                 detachRedisTopicListener(redisUserAlarmSubscribeInfo.getMessageListener());
+                //sink를 닫는다. 재시도는 true(닫는 중에도 sink가 데이터를 보낼 수 있으므로 스레드 경합에 의한 오류 가능)
+                redisUserAlarmSubscribeInfo.getSink().emitComplete((signalType, emitResult) -> true);
                 //map 에서 info 삭제
                 redisUserAlarmSubscribeInfo = null;
             }
