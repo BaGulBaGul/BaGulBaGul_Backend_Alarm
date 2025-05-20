@@ -32,7 +32,8 @@ jobs:
 
   #블루 그린 배포
   deploy:
-    if: github.repository == 'BaGulBaGul/BaGulBaGul_Backend_Alarm'
+    #
+    if: github.repository == 'BaGulBaGul/BaGulBaGul_Backend_Alarm' && vars.ASG_BACKEND_ALARM_DESIRED_CAPACITY != '0'
     runs-on: ubuntu-latest
     needs: build
     env:
