@@ -1,18 +1,22 @@
 package com.bagulbagul.bagulbagul.alarm.service.redis;
 
 import com.bagulbagul.bagulbagul.alarm.service.UserAlarmSubscribeManager;
+import jakarta.annotation.PostConstruct;
 import java.time.Duration;
 import java.util.concurrent.ConcurrentHashMap;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.connection.MessageListener;
 import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.core.publisher.Sinks.Many;
 import reactor.core.scheduler.Schedulers;
+import reactor.util.concurrent.Queues;
 
 @Slf4j
 @Service
@@ -20,11 +24,16 @@ import reactor.core.scheduler.Schedulers;
 public class RedisUserAlarmSubscribeManager implements UserAlarmSubscribeManager {
 
     //redis 채널명의 prefix
-    private final String TOPIC_PREFIX = "alarm_user_";
+    @Value("${alarm.realtime.redis.alarm_topic_prefix}")
+    private String TOPIC_PREFIX;
+
     //HeartBeat 요청의 간격(초)
-    private final int HEARTBEAT_INTERVAL_SECOND = 120;
+    @Value("${alarm.realtime.hb_interval_second}")
+    private int HEARTBEAT_INTERVAL_SECOND;
     //HeartBeat 요청 메세지 내용
-    private final String HEARTBEAT_MESSAGE = "HB";
+    @Value("${alarm.realtime.hb_message}")
+    private String HEARTBEAT_MESSAGE;
+
     //레디스 메세지 리스너 관리 컨테이너
     private final RedisMessageListenerContainer redisMessageListenerContainer;
 
@@ -35,9 +44,14 @@ public class RedisUserAlarmSubscribeManager implements UserAlarmSubscribeManager
     //single thread 의 이유
     //1.같은 동작을 반복하므로 캐시 등의 효율성을 위해 한 스레드에서 실행하도록 함.
     //2.연결 정리보다 다른 메세지 전달이 더 중요하기 때문에 다른 Flux 를 방해하지 않기 위해 스레드 제한을 뒀다.
-    private final Flux<String> heartbeatFlux = Flux.interval(Duration.ofSeconds(HEARTBEAT_INTERVAL_SECOND), Schedulers.single())
-            .map(i -> HEARTBEAT_MESSAGE);
+    private Flux<String> heartbeatFlux;
 
+
+    @PostConstruct
+    private void init() {
+        heartbeatFlux = Flux.interval(Duration.ofSeconds(HEARTBEAT_INTERVAL_SECOND), Schedulers.single())
+                .map(i -> HEARTBEAT_MESSAGE);
+    }
 
     /*
      * flow : redis_pub/sub -> redis_message_listener -> sink -> flux
@@ -47,10 +61,34 @@ public class RedisUserAlarmSubscribeManager implements UserAlarmSubscribeManager
      */
     @Override
     public Flux<String> subscribe(final Long userId) {
-        // userId에 대한 구독 정보가 없다면 등록. 구독 정보를 가져온다.
-        RedisUserAlarmSubscribeInfo info = subscribeInfoMap.computeIfAbsent(userId, (key) -> register(key));
+
+        /*
+         * userId에 대한 구독 정보가 없다면 등록. 구독 정보를 가져온다.
+         * 등록 과정에서 이벤트 루프의 block을 방지하기 위해 작업 스레드에서 처리
+         *
+         * 구독자 수는 동기화된 코드 내에서 구독 정보 반환 직전에 즉시 올려줘야 한다.
+         * 만약 doOnSubscribe에서 구독자 수를 증가시키면 기존 연결이 닫히면서 구독자가 0이 되고 자원이 정리될 수 있다.
+         * req1 : subscribe -> subscribeInfoMap[userId] : absent -> register -> add RedisListener -> return subscribeInfoMap[userId].getFlux()
+         * req1 : doOnSubscribe -> cnt=1
+         * req2 : subscribe -> subscribeInfoMap[userId] : present -> return subscribeInfoMap[userId].getFlux()
+         * req1 : doOnCancle -> subscribeInfoMap[userId] : present -> cnt=0 -> subscribeInfoMap[userId]=null -> remove RedisListener
+         * req2 : doOnSubscribe -> subscribeInfoMap[userId] : absent -> doNothing
+         */
+        Mono<RedisUserAlarmSubscribeInfo> infoMono = Mono.fromCallable(() ->
+                        subscribeInfoMap.compute(userId, (key, redisUserAlarmSubscribeInfo) -> {
+                            //userId에 대해 구독 정보 등록
+                            if(redisUserAlarmSubscribeInfo == null) {
+                                redisUserAlarmSubscribeInfo = register(key);
+                            }
+                            //구독자 수 증가
+                            redisUserAlarmSubscribeInfo.setSubscribeCnt(redisUserAlarmSubscribeInfo.getSubscribeCnt() + 1);
+                            //구독 정보 반환
+                            return redisUserAlarmSubscribeInfo;
+                        }))
+                .subscribeOn(Schedulers.boundedElastic());
+
         //연결된 Flux 반환
-        return info.getFlux();
+        return infoMono.flatMapMany(RedisUserAlarmSubscribeInfo::getFlux);
     }
 
     /*
@@ -60,8 +98,14 @@ public class RedisUserAlarmSubscribeManager implements UserAlarmSubscribeManager
      * 생성된 구독 정보를 반환한다.
      */
     private RedisUserAlarmSubscribeInfo register(Long userId) {
-        // sink 생성, Hot Stream
-        Many sink = Sinks.many().multicast().onBackpressureBuffer();
+        /*
+         * sink 생성, Hot Stream
+         * 자체 구독자 관리 로직이 sink의 구독자 관리 위에서 돌아가므로 동시 요청 시 순간적으로 구독자가 0이 될 수가 있다.
+         * req1 subscribe flux(sink 1, 자체 1) -> req2 get flux(sink 1, 자체 2)
+         * -> req1 cancle(sink 0, 자체 1) -> sink autocancle -> req2 subscribe flux
+         * 따라서 autoCancle은 false로 하고 자체 구독자 0명이 되면 직접 sink를 닫는다.
+         */
+        Many sink = Sinks.many().multicast().onBackpressureBuffer(Queues.SMALL_BUFFER_SIZE, false);
         // sink 에서 데이터를 받고 연결, 구독 관리 설정을 추가한 Flux 생성
         Flux<String> flux = createFlux(userId, sink);
         //redis pub sub 리스너를 추가
@@ -87,31 +131,20 @@ public class RedisUserAlarmSubscribeManager implements UserAlarmSubscribeManager
                 .doOnError(e -> {
                     log.error("실시간 알람 전송 실패", e);
                 })
-                //클라이언트가 구독을 시작
-                .doOnSubscribe(subscription -> {
-                    // 구독자 수 +1
-                    increaseSubscriptionCnt(userId);
-                })
                 //클라이언트가 연결을 종료하면 구독 해제(명시적인 종료 요청에 해당)
                 //heartbeat 메세지를 주기적으로 보내서 비정상적인 종료에 의해 남은 연결도 주기적으로 정리.
                 .doOnCancel(() -> {
                     // 구독자 수 -1
-                    decreaseSubscriptionCnt(userId);
+                    // 이벤트 루프가 잠시 block될수 있으므로 작업 스레드에서 처리
+                    Mono.fromRunnable(() -> decreaseSubscriptionCnt(userId))
+                            .subscribeOn(Schedulers.boundedElastic())
+                            .subscribe();
                 });
         //메세지 Flux 와 heartbeat Flux 를 묶어서 반환
-        return Flux.merge(messageFlux, heartbeatFlux);
-    }
-
-    /*
-     * userId에 대해 구독자 수를 증가시킴.
-     * userId에 대해 동기화된 처리 수행
-     */
-    private void increaseSubscriptionCnt(Long userId) {
-        // 구독자 수 +1
-        subscribeInfoMap.computeIfPresent(userId, (key, redisUserAlarmSubscribeInfo) -> {
-            redisUserAlarmSubscribeInfo.setSubscribeCnt(redisUserAlarmSubscribeInfo.getSubscribeCnt() + 1);
-            return redisUserAlarmSubscribeInfo;
-        });
+        messageFlux = Flux.merge(messageFlux, heartbeatFlux);
+        //sse 준비 완료 즉시 HB 메세지를 한번 방출
+        messageFlux = Flux.concat(Mono.just(HEARTBEAT_MESSAGE), messageFlux);
+        return messageFlux;
     }
 
     /*
@@ -128,21 +161,14 @@ public class RedisUserAlarmSubscribeManager implements UserAlarmSubscribeManager
             if(redisUserAlarmSubscribeInfo.getSubscribeCnt() == 0) {
                 //리스너 해제
                 detachRedisTopicListener(redisUserAlarmSubscribeInfo.getMessageListener());
+                //sink를 닫는다. 재시도는 true(닫는 중에도 sink가 데이터를 보낼 수 있으므로 스레드 경합에 의한 오류 가능)
+                redisUserAlarmSubscribeInfo.getSink().emitComplete((signalType, emitResult) -> true);
                 //map 에서 info 삭제
                 redisUserAlarmSubscribeInfo = null;
             }
             return redisUserAlarmSubscribeInfo;
         });
     }
-
-//    /*
-//     * userId에 대한 구독 정보를 삭제한다.
-//     * userId에 대한 동기화를 고려해야 한다.
-//     * 레디스 메세지 리스너를 해제하고 info map 에서 구독 정보를 제거한다.
-//     */
-//    private void unRegister(Long userId) {
-//
-//    }
 
     private RedisUserAlarmMessageListener attachRedisTopicListener(Long userId, Sinks.Many<String> sink) {
         //리스너 생성

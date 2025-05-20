@@ -1,0 +1,6 @@
+alarm:
+  realtime:
+    redis:
+      alarm_topic_prefix: ${REDIS_ALARM_TOPIC_PREFIX}
+    hb_message: ${HB_MESSAGE}
+    hb_interval_second: ${HB_INTERVAL_SECOND}

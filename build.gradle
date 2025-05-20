@@ -35,8 +35,31 @@ dependencies {
 	annotationProcessor 'org.projectlombok:lombok'
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
 	testImplementation 'org.springframework.security:spring-security-test'
+	testImplementation "org.testcontainers:testcontainers:1.20.5"
+	testImplementation "org.testcontainers:junit-jupiter:1.20.5"
 }
 
 tasks.named('test') {
+	doFirst {
+		println "========================================================"
+		println "환경변수 대입 작업 실행"
+		def envFile = file('.env')
+		if (envFile.exists()) {
+			println "========================================================"
+			println "환경변수 파일 발견"
+			println "========================================================"
+			envFile.readLines().each { line ->
+				if (!line.isEmpty() && !line.startsWith("#")) {
+					def pos = line.indexOf("=")
+					def key = line.substring(0, pos)
+					def value = line.substring(pos + 1)
+
+					environment key, value
+					println key
+				}
+			}
+			println "========================================================"
+		}
+	}
 	useJUnitPlatform()
 }

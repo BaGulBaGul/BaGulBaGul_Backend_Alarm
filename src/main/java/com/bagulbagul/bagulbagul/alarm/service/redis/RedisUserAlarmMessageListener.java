@@ -1,13 +1,15 @@
 package com.bagulbagul.bagulbagul.alarm.service.redis;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.connection.Message;
 import org.springframework.data.redis.connection.MessageListener;
+import reactor.core.publisher.Sinks;
 import reactor.core.publisher.Sinks.EmitResult;
 import reactor.core.publisher.Sinks.Many;
 
+@Slf4j
 public class RedisUserAlarmMessageListener implements MessageListener {
     private Many sink;
-    private final int RETRY_CNT = 2;
 
     public RedisUserAlarmMessageListener(Many sink) {
         this.sink = sink;
@@ -15,11 +17,6 @@ public class RedisUserAlarmMessageListener implements MessageListener {
 
     @Override
     public void onMessage(Message message, byte[] pattern) {
-        int failCnt = 0;
-        EmitResult emitResult = sink.tryEmitNext(message.toString());
-        while(emitResult.isFailure() && failCnt < RETRY_CNT) {
-            failCnt += 1;
-            sink.tryEmitNext(message.toString());
-        }
+        sink.emitNext(message.toString(), (signalType, result) -> result == EmitResult.FAIL_NON_SERIALIZED);
     }
 }
